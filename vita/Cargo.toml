@@ -1,0 +1,44 @@
+[package]
+name = "ruffle-vita"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ruffle_core = { path = "../core", features = ["audio", "clap", "mp3", "nellymoser", "default_compatibility_rules", "egui"] }
+ruffle_render = { path = "../render", features = ["tessellator"] }
+thiserror = "1.0.24"
+futures = "0.3.30"
+anyhow = "1.0.86"
+bytemuck = { version = "1.16.1", features = ["derive"] }
+swf = { path = "../swf" }
+sdl2 = { version = "0.37.0" }
+
+
+[workspace]
+
+[profile.release]
+opt-level = 3
+
+[profile.dev]
+opt-level = 3
+
+[package.metadata.vita]
+# A unique identifier for your project. 9 chars, alphanumeric.
+title_id = "RUFFLEPSV"
+# A title that will be shown on a bubble. Optional, will take the crate name as the default
+title_name = "ruffle-vita"
+# Optional. A path to static files relative to the project.
+assets = "static"
+# Optional, this is the default
+build_std = "std,panic_unwind"
+# Optional, this is the default
+vita_make_fself_flags = ["-s"]
+# Optional, this is the default
+vita_mksfoex_flags = ["-d", "ATTRIBUTE2=12"]
+
+[package.metadata.vita.profile.dev]
+# Strips symbols from the vita elf in dev profile. Optional, default is false
+strip_symbols = false
+[package.metadata.vita.profile.release]
+# Strips symbols from the vita elf in release profile. Optional, default is true
+strip_symbols = true
