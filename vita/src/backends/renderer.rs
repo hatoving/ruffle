@@ -2,19 +2,24 @@
 // Remove this when we start using `Rc` when compiling for wasm
 #![allow(clippy::arc_with_non_send_sync)]
 
+use ruffle_render::bitmap::BitmapHandleImpl;
+use ruffle_render::transform::Transform;
+use ruffle_render::bitmap::PixelSnapping;
+use bytemuck::Pod;
+use bytemuck::Zeroable;
+use thiserror::Error;
 use std::ffi::CStr;
-use crate::vitalib::*;
 use ruffle_render::backend::ShapeHandleImpl;
 use ruffle_render::tessellator::Mesh as OtherMesh;
 use std::sync::Arc;
 use std::ffi::c_void;
 use ruffle_render::bitmap::RgbaBufRead;
+use ruffle_render::commands::{CommandHandler, CommandList, RenderBlendMode};
 use ruffle_render::backend::RenderBackend;
 use ruffle_core::ViewportDimensions;
 use ruffle_render::bitmap::BitmapSource;
 use ruffle_render::backend::ShapeHandle;
 use ruffle_render::bitmap::BitmapHandle;
-use ruffle_render::commands::CommandList;
 use ruffle_render::error::Error as BitmapError;
 use ruffle_render::quality::StageQuality;
 use ruffle_render::bitmap::PixelRegion;
@@ -30,9 +35,10 @@ use ruffle_render::backend::PixelBenderTarget;
 use ruffle_render::backend::PixelBenderOutput;
 use ruffle_render::shape_utils::{DistilledShape, GradientType};
 use ruffle_render::tessellator::{
-    Gradient as TessGradient, ShapeTessellator,
+    Gradient as TessGradient, ShapeTessellator, Vertex as TessVertex
 };
 use swf::Color as SwfColor;
+use swf::BlendMode;
 use std::ffi::CString;
 
 use sdl2::keyboard::Keycode;
@@ -55,6 +61,67 @@ struct Gradient {
     repeat_mode: i32,
     focal_point: f32,
     interpolation: swf::GradientInterpolation,
+}
+
+#[link(name = "vitaGL", kind = "static")]
+#[link(name = "SDL2", kind = "static")]
+#[link(name = "vitashark", kind = "static")]
+#[link(name = "SceShaccCgExt", kind = "static")]
+#[link(name = "mathneon", kind = "static")]
+#[link(name = "taihen_stub", kind = "static")]
+#[link(name = "SceAppMgr_stub", kind = "static")]
+#[link(name = "SceAudio_stub", kind = "static")]
+#[link(name = "SceAudioIn_stub", kind = "static")]
+#[link(name = "SceCtrl_stub", kind = "static")]
+#[link(name = "SceTouch_stub", kind = "static")]
+#[link(name = "SceMotion_stub", kind = "static")]
+#[link(name = "SceCommonDialog_stub", kind = "static")]
+#[link(name = "SceDisplay_stub", kind = "static")]
+#[link(name = "SceKernelDmacMgr_stub", kind = "static")]
+#[link(name = "SceGxm_stub", kind = "static")]
+#[link(name = "SceShaccCg_stub", kind = "static")]
+#[link(name = "SceIme_stub", kind = "static")]
+#[link(name = "SceHid_stub", kind = "static")]
+extern "C" {}
+
+
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("Couldn't create GL context")]
+    CantCreateGLContext,
+
+    #[error("Couldn't create frame buffer")]
+    UnableToCreateFrameBuffer,
+
+    #[error("Couldn't create program")]
+    UnableToCreateProgram,
+
+    #[error("Couldn't create texture")]
+    UnableToCreateTexture,
+
+    #[error("Couldn't compile shader")]
+    UnableToCreateShader,
+
+    #[error("Couldn't create render buffer")]
+    UnableToCreateRenderBuffer,
+
+    #[error("Couldn't create vertex array object")]
+    UnableToCreateVAO,
+
+    #[error("Couldn't create buffer")]
+    UnableToCreateBuffer,
+
+    #[error("OES_element_index_uint extension not available")]
+    OESExtensionNotFound,
+
+    #[error("VAO extension not found")]
+    VAOExtensionNotFound,
+
+    #[error("Couldn't link shader program: {0}")]
+    LinkingShaderProgram(String),
+
+    #[error("GL Error in {0}: {1}")]
+    GLError(&'static str, u32),
 }
 
 impl Gradient {
@@ -125,9 +192,9 @@ enum DrawType {
 #[derive(Debug)]
 struct Draw {
     draw_type: DrawType,
-    vao: u32,
     vertex_buffer: u32,
     index_buffer: u32,
+    vao: u32,
     num_indices: i32,
     num_mask_indices: i32,
 }
@@ -153,23 +220,23 @@ impl ShaderProgram {
         Self { id: u32::MAX, vertex_shader: u32::MAX, fragment_shader: u32::MAX, vertex_position_location: 0, vertex_color_location: 0, num_vertex_attributes: 0 }
     }
 
-    fn create_program(&mut self, _f : u32, _v : u32) -> u32 {
-        let mut _result : u32 = 0;
+    fn create_program(&mut self, _f : u32, _v : u32) -> i32 {
+        let mut _result : i32 = 0;
 
         unsafe {
-            self.id = vitaGL::glCreateProgram();
+            self.id = gl::CreateProgram();
 
-            vitaGL::glAttachShader(self.id, _f);
-            vitaGL::glAttachShader(self.id, _v);
+            gl::AttachShader(self.id, _f);
+            gl::AttachShader(self.id, _v);
 
             self.fragment_shader = _f;
             self.vertex_shader = _v;
 
-            vitaGL::glLinkProgram(self.id);
-            vitaGL::glGetProgramiv(self.id, 0x8B82, &mut _result);
+            gl::LinkProgram(self.id);
+            gl::GetProgramiv(self.id, 0x8B82, &mut _result);
 
-            self.vertex_position_location = vitaGL::glGetAttribLocation(self.id, CString::new("position").unwrap().as_ptr()) as u32;
-            self.vertex_color_location = vitaGL::glGetAttribLocation(self.id, CString::new("color").unwrap().as_ptr()) as u32;
+            self.vertex_position_location = gl::GetAttribLocation(self.id, CString::new("position").unwrap().as_ptr()) as u32;
+            self.vertex_color_location = gl::GetAttribLocation(self.id, CString::new("color").unwrap().as_ptr()) as u32;
             self.num_vertex_attributes = if self.vertex_position_location != 0xffff_ffff {
                 1
             } else {
@@ -185,6 +252,75 @@ impl ShaderProgram {
         println!("PROG RESULT: {}", _result);
 
         return _result;
+    }
+
+    fn uniform1i(&self, uniform: &str, value: i32) {
+        //gl.uniform1i(self.uniforms[uniform as usize].as_ref(), value);
+        unsafe {
+            gl::ProgramUniform1i(
+                self.id,
+                gl::GetUniformLocation(self.id, CString::new(uniform).unwrap().as_ptr()),
+                value
+            );
+        }
+    }
+
+    fn uniform1f(&self, uniform: &str, value: f32) {
+        //gl.uniform1i(self.uniforms[uniform as usize].as_ref(), value);
+        unsafe {
+            gl::ProgramUniform1f(
+                self.id,
+                gl::GetUniformLocation(self.id, CString::new(uniform).unwrap().as_ptr()),
+                value
+            );
+        }
+    }
+
+    fn uniform1fv(&self, uniform: &str, values: &[f32]) {
+        unsafe {
+            gl::ProgramUniform1fv(
+                self.id,
+                gl::GetUniformLocation(self.id, CString::new(uniform).unwrap().as_ptr()),
+                1,
+                values.as_ptr() as *const f32,
+            );
+        }
+    }
+
+
+    fn uniform4fv(&self, uniform: &str, values: &[f32]) {
+        unsafe {
+            gl::ProgramUniform4fv(
+                self.id,
+                gl::GetUniformLocation(self.id, CString::new(uniform).unwrap().as_ptr()),
+                1,
+                values.as_ptr() as *const f32,
+            );
+        }
+    }
+
+    fn uniform_matrix3fv(&self, uniform: &str, values: &[[f32; 3]; 3]) {
+        unsafe {
+            gl::ProgramUniformMatrix3fv(
+                self.id,
+                gl::GetUniformLocation(self.id, CString::new(uniform).unwrap().as_ptr()),
+                1,
+                0,
+                bytemuck::cast_slice(values).as_ptr() as *const f32,
+            );
+        }
+    }
+
+    fn uniform_matrix4fv(&self, uniform: &str, values: &[[f32; 4]; 4]) {
+        unsafe {
+            gl::ProgramUniformMatrix4fv(
+                self.id,
+                gl::GetUniformLocation(self.id, CString::new(uniform).unwrap().as_ptr()),
+                1,
+                0,
+                bytemuck::cast_slice(values).as_ptr() as *const f32,
+            );
+        }
     }
 }
 
@@ -211,23 +347,39 @@ pub struct VitaRenderBackend {
     // to expose via `get_viewport_dimensions`
     viewport_scale_factor: f64,
 
-    movie_width: u32,
-    movie_height: u32,
+    color_quad_draws: Vec<Draw>,
+    bitmap_quad_draws: Vec<Draw>,
 
-    canvas: Canvas<Window>
+    mask_state: MaskState,
+    num_masks: u32,
+    mask_state_dirty: bool,
+    is_transparent: bool,
+
+    active_program: *const ShaderProgram,
+    blend_modes: Vec<RenderBlendMode>,
+    mult_color: Option<[f32; 4]>,
+    add_color: Option<[f32; 4]>,
+
+    renderbuffer_width: i32,
+    renderbuffer_height: i32,
+    view_matrix: [[f32; 4]; 4],
+
+    window: Window,
+
+    vao: u32
     //window: *mut SDL2::SDL_Window
 }
 
-pub fn create_and_compile_shader(_shader: &mut u32, _count: i32, _type: u32, _string: *const *const i8, _length: i32) -> u32 {
-    let mut result : u32 = 0;
+pub fn create_and_compile_shader(_shader: &mut u32, _count: i32, _type: u32, _string: *const *const i8, _length: i32) -> i32 {
+    let mut result : i32 = 0;
 
     unsafe {
-        *_shader = vitaGL::glCreateShader(_type);
+        *_shader = gl::CreateShader(_type);
 
-        vitaGL::glShaderSource(*_shader, _count, _string, std::ptr::null());
-        vitaGL::glCompileShader(*_shader);
+        gl::ShaderSource(*_shader, _count, _string, std::ptr::null());
+        gl::CompileShader(*_shader);
 
-        vitaGL::glGetShaderiv(*_shader, 0x8B81, &mut result);
+        gl::GetShaderiv(*_shader, 0x8B81, &mut result);
     }
 
     println!("SHADER ID: {}", *_shader);
@@ -236,8 +388,81 @@ pub fn create_and_compile_shader(_shader: &mut u32, _count: i32, _type: u32, _st
     return result;
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct Vertex {
+    position: [f32; 2],
+    color: u32,
+}
+
+impl From<TessVertex> for Vertex {
+    fn from(vertex: TessVertex) -> Self {
+        Self {
+            position: [vertex.x, vertex.y],
+            color: u32::from_le_bytes([
+                vertex.color.r,
+                vertex.color.g,
+                vertex.color.b,
+                vertex.color.a,
+            ]),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Buffer {
+    buffer: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MaskState {
+    NoMask,
+    DrawMaskStencil,
+    DrawMaskedContent,
+    ClearMaskStencil,
+}
+
+fn same_blend_mode(first: Option<&RenderBlendMode>, second: &RenderBlendMode) -> bool {
+    match (first, second) {
+        (Some(RenderBlendMode::Builtin(old)), RenderBlendMode::Builtin(new)) => old == new,
+        _ => false,
+    }
+}
+
 impl VitaRenderBackend {
-     pub fn new(c: Canvas<Window>, w: u32, h: u32) -> Self {
+    fn apply_blend_mode(&mut self, mode: RenderBlendMode) {
+        let (blend_op, src_rgb, dst_rgb) = match mode {
+            RenderBlendMode::Builtin(BlendMode::Normal) => {
+                // src + (1-a)
+                (gl::FUNC_ADD, gl::ONE, gl::ONE_MINUS_SRC_ALPHA)
+            }
+            RenderBlendMode::Builtin(BlendMode::Add) => {
+                // src + dst
+                (gl::FUNC_ADD, gl::ONE, gl::ONE)
+            }
+            RenderBlendMode::Builtin(BlendMode::Subtract) => {
+                // dst - src
+                (gl::FUNC_REVERSE_SUBTRACT, gl::ONE, gl::ONE)
+            }
+            _ => {
+                // TODO: Unsupported blend mode. Default to normal for now.
+                (gl::FUNC_ADD, gl::ONE, gl::ONE_MINUS_SRC_ALPHA)
+            }
+        };
+        unsafe {
+            gl::BlendEquationSeparate(blend_op, gl::FUNC_ADD);
+            gl::BlendFuncSeparate(src_rgb, dst_rgb, gl::ONE, gl::ONE_MINUS_SRC_ALPHA);
+        }
+    }
+
+    fn push_blend_mode(&mut self, blend: RenderBlendMode) {
+        if !same_blend_mode(self.blend_modes.last(), &blend) {
+            self.apply_blend_mode(blend.clone());
+        }
+        self.blend_modes.push(blend);
+    }
+
+    pub fn new(_window: Window) -> Self {
         unsafe {
             /*
             let init_return = SDL2::SDL_Init(0x00000020u32);
@@ -245,6 +470,21 @@ impl VitaRenderBackend {
             if init_return < 0 {
                 println!("SDL ERROR. {}", CStr::from_ptr(SDL2::SDL_GetError()).to_str().expect("to_str() failed :((").to_owned());
             }*/
+
+            let mut color_vert_shader : u32 = 0;
+            let mut color_frag_shader : u32 = 0;
+
+            let mut tex_vert_shader : u32 = 0;
+
+            let mut gradient_frag_shader : u32 = 0;
+            let mut bitmap_frag_shader : u32 = 0;
+
+            create_and_compile_shader(&mut color_vert_shader, 1, gl::VERTEX_SHADER, [CString::new(COLOR_VERTEX_GLSL).unwrap().as_ptr()].as_ptr(), 0);
+            create_and_compile_shader(&mut color_frag_shader, 1, gl::FRAGMENT_SHADER, [CString::new(COLOR_FRAGMENT_GLSL).unwrap().as_ptr()].as_ptr(), 0);
+            create_and_compile_shader(&mut tex_vert_shader, 1, gl::VERTEX_SHADER, [CString::new(TEXTURE_VERTEX_GLSL).unwrap().as_ptr()].as_ptr(), 0);
+            create_and_compile_shader(&mut gradient_frag_shader, 1, gl::FRAGMENT_SHADER, [CString::new(GRADIENT_FRAGMENT_GLSL).unwrap().as_ptr()].as_ptr(), 0);
+            create_and_compile_shader(&mut bitmap_frag_shader, 1, gl::FRAGMENT_SHADER, [CString::new(BITMAP_FRAGMENT_GLSL).unwrap().as_ptr()].as_ptr(), 0);
+
             let mut instance = Self {
                 screen_width: 960,
                 screen_height: 544,
@@ -257,13 +497,58 @@ impl VitaRenderBackend {
 
                 viewport_scale_factor: 1.0,
 
-                movie_width: w,
-                movie_height: h,
+                color_quad_draws: vec![],
+                bitmap_quad_draws: vec![],
+                view_matrix: [[0.0; 4]; 4],
 
-                canvas: c
+                mask_state: MaskState::NoMask,
+                num_masks: 0,
+                mask_state_dirty: true,
+                is_transparent: false,
+
+                active_program: std::ptr::null(),
+                blend_modes: vec![],
+                mult_color: None,
+                add_color: None,
+
+                renderbuffer_width: 1,
+                renderbuffer_height: 1,
+
+                window: _window,
+
+                vao: 0
                 //window: SDL2::SDL_CreateWindow(CString::new("ruffle").expect("CString has failed :(").as_ptr(), 0x2FFF0000u32, 0x2FFF0000u32, 960, 544, 0x00000004)
             };
-            instance.canvas.set_logical_size(instance.movie_width, instance.movie_height);
+
+            instance.color_program.create_program(color_frag_shader, color_vert_shader);
+            instance.bitmap_program.create_program(bitmap_frag_shader, tex_vert_shader);
+            instance.gradient_program.create_program(gradient_frag_shader, tex_vert_shader);
+
+            gl::Enable(gl::BLEND);
+            gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
+
+            instance.push_blend_mode(RenderBlendMode::Builtin(BlendMode::Normal));
+
+            //let bitmap_programd = instance.bitmap_program;
+            // Use the clone for the immutable borrow
+            // Immutable borrows
+            let color_program = instance.color_program.clone();
+            let bitmap_program = instance.bitmap_program.clone();
+
+            // Mutably borrow `instance` to call `build_quad_mesh`
+            let mut instance = instance; // Make sure instance is mutable here
+
+            let mut color_quad_mesh = instance.build_quad_mesh(&color_program);
+            let mut bitmap_quad_mesh = instance.build_quad_mesh(&bitmap_program);
+
+            instance.color_quad_draws.append(&mut color_quad_mesh);
+            instance.bitmap_quad_draws.append(&mut bitmap_quad_mesh);
+
+            instance.set_viewport_dimensions(ViewportDimensions {
+                width: 1,
+                height: 1,
+                scale_factor: 1.0,
+            });
             /*println!("SDL_Window init: {:#?}", instance.window);
             if instance.window == std::ptr::null_mut() {
                 println!("SDL ERROR. {}", CStr::from_ptr(SDL2::SDL_GetError()).to_str().expect("to_str() failed :((").to_owned());
@@ -271,8 +556,438 @@ impl VitaRenderBackend {
             instance
         }
     }
+
     fn build_quad_mesh(&mut self, _program: &ShaderProgram) -> Vec<Draw> {
-        todo!()
+        let _vao = self.create_vertex_array();
+        let _vertex_buf = self.create_buffer();
+
+        unsafe {
+            gl::BindBuffer(gl::ARRAY_BUFFER, _vertex_buf);
+            let vertex_data: &[u8] = bytemuck::cast_slice(&[
+                Vertex {
+                    position: [0.0, 0.0],
+                    color: 0xffff_ffff,
+                },
+                Vertex {
+                    position: [1.0, 0.0],
+                    color: 0xffff_ffff,
+                },
+                Vertex {
+                    position: [1.0, 1.0],
+                    color: 0xffff_ffff,
+                },
+                Vertex {
+                    position: [0.0, 1.0],
+                    color: 0xffff_ffff,
+                },
+            ]);
+
+            unsafe {
+                gl::BufferData(
+                    gl::ARRAY_BUFFER,
+                    vertex_data.len() as gl::types::GLsizeiptr,
+                    vertex_data.as_ptr() as *const gl::types::GLvoid,
+                    gl::STATIC_DRAW,
+                );
+            }
+
+            let index_buffer = self.create_buffer();
+            
+            unsafe {
+                gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, index_buffer);
+            }
+
+            let indexes = [0u32, 1, 2, 3];
+            //let mut index_data = Vec::with_capacity(indexes.len() * mem::size_of::<u32>());
+            let index_data : &[u8] = bytemuck::cast_slice(&[0u32, 1, 2, 3]);
+
+            unsafe {
+                gl::BufferData(
+                    gl::ELEMENT_ARRAY_BUFFER,
+                    index_data.len() as gl::types::GLsizeiptr,
+                    index_data.as_ptr() as *const gl::types::GLvoid,
+                    gl::STATIC_DRAW,
+                );
+            }
+
+            if _program.vertex_position_location != 0xffff_ffff {
+                unsafe {
+                    gl::VertexAttribPointer(
+                        _program.vertex_position_location,
+                        2,
+                        gl::FLOAT,
+                        0,
+                        12,
+                        std::ptr::null(),
+                    );
+                    gl::EnableVertexAttribArray(_program.vertex_position_location);
+                }
+                //gl
+                    //.enable_vertex_attrib_array(program.vertex_position_location);
+            }
+
+            if _program.vertex_color_location != 0xffff_ffff {
+                unsafe {
+                    gl::VertexAttribPointer(
+                        _program.vertex_color_location,
+                        4,
+                        gl::UNSIGNED_BYTE,
+                        1,
+                        12,
+                        8 as *const c_void,
+                    );
+                    gl::EnableVertexAttribArray(_program.vertex_color_location);
+                }
+                //gl
+                    //.enable_vertex_attrib_array(program.vertex_position_location);
+            }
+
+            self.bind_vertex_array(0);
+
+            for i in _program.num_vertex_attributes..NUM_VERTEX_ATTRIBUTES {
+                unsafe {
+                    gl::DisableVertexAttribArray(i);
+                }
+            }
+
+            let mut draws = vec![];
+            draws.push(Draw {
+                draw_type: if _program.fragment_shader == self.bitmap_program.fragment_shader {
+                    DrawType::Bitmap(BitmapDraw {
+                        matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                        handle: None,
+                        is_smoothed: true,
+                        is_repeating: false,
+                    })
+                } else {
+                    DrawType::Color
+                },
+                vao: _vao,
+                vertex_buffer: _vertex_buf,
+                index_buffer: index_buffer,
+                num_indices: 4,
+                num_mask_indices: 4,
+            });
+
+            draws
+        }
+    }
+
+    fn create_vertex_array(&mut self) -> u32 {
+        let mut vao : u32 = 0;
+        
+        unsafe {
+            gl::GenVertexArrays(1, &mut vao);
+        }
+        println!("glGenVertexArrays: {}", vao);
+        self.vao = vao;
+        vao
+    }
+
+    fn bind_vertex_array(&mut self, vao: u32) {
+        unsafe {
+            gl::BindVertexArray(vao);
+        }
+        println!("glBindVertexArray: {}", vao);
+        self.vao = vao;
+    }
+
+    fn set_stencil_state(&mut self) {
+        // Set stencil state for masking, if necessary.
+        if self.mask_state_dirty {
+            unsafe {
+                match self.mask_state {
+                    MaskState::NoMask => {
+                        gl::Disable(gl::STENCIL_TEST);
+                        gl::ColorMask(1, 1, 1, 1);
+                    }
+                    MaskState::DrawMaskStencil => {
+                        gl::Enable(gl::STENCIL_TEST);
+                        gl::StencilFunc(gl::EQUAL, (self.num_masks - 1) as i32, 0xff);
+                        gl::StencilOp(gl::KEEP, gl::KEEP, gl::INCR);
+                        gl::ColorMask(0, 0, 0, 0);
+                    }
+                    MaskState::DrawMaskedContent => {
+                        gl::Enable(gl::STENCIL_TEST);
+                        gl::StencilFunc(gl::EQUAL, self.num_masks as i32, 0xff);
+                        gl::StencilOp(gl::KEEP, gl::KEEP, gl::KEEP);
+                        gl::ColorMask(1, 1, 1, 1);
+                    }
+                    MaskState::ClearMaskStencil => {
+                        gl::Enable(gl::STENCIL_TEST);
+                        gl::StencilFunc(gl::EQUAL, self.num_masks as i32, 0xff);
+                        gl::StencilOp(gl::KEEP, gl::KEEP, gl::DECR);
+                        gl::ColorMask(0, 0, 0, 0);
+                    }
+                }
+            }
+        }
+    }
+
+    fn create_buffer(&mut self) -> u32 {
+        let mut buf = 0;
+        
+        unsafe {
+            gl::GenBuffers(1, &mut buf);
+        }
+        println!("glGenBuffers: {}", buf);
+        buf
+    }
+
+    fn register_shape_internal(&mut self, shape: DistilledShape, bitmap_source: &dyn BitmapSource) -> Result<Vec<Draw>, Error> {
+        use ruffle_render::tessellator::DrawType as TessDrawType;
+
+        let lyon_mesh = self
+            .shape_tessellator
+            .tessellate_shape(shape, bitmap_source);
+
+        let mut draws: Vec<Draw> = Vec::with_capacity(lyon_mesh.draws.len());
+        for draw in lyon_mesh.draws {
+            let num_indices = draw.indices.len() as i32;
+            let num_mask_indices = draw.mask_index_count as i32;
+            println!("num_indices: {}", num_indices);
+
+            let vao = self.create_vertex_array();
+            let vertex_buffer = self.create_buffer();
+            unsafe {
+                gl::BindBuffer(gl::ARRAY_BUFFER, vertex_buffer);
+            }
+
+            let vertices: Vec<_> = draw.vertices.into_iter().map(Vertex::from).collect();
+            let vertex_data: &[u8] = bytemuck::cast_slice(&vertices);
+            unsafe {
+                gl::BufferData(
+                    gl::ARRAY_BUFFER,
+                    vertex_data.len() as gl::types::GLsizeiptr,
+                    vertex_data.as_ptr() as *const gl::types::GLvoid,
+                    gl::STATIC_DRAW,
+                );
+            }
+
+            let index_buffer = self.create_buffer();
+            unsafe {
+                gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, index_buffer);
+            }
+
+            //let vertices: Vec<_> = draw.vertices.into_iter().map(|arg0: ruffle_render::tessellator::Vertex| Vertex::from).collect();
+            let indices_data: &[u8] = bytemuck::cast_slice(&draw.indices);
+            unsafe {
+                gl::BufferData(
+                    gl::ELEMENT_ARRAY_BUFFER,
+                    indices_data.len() as gl::types::GLsizeiptr,
+                    indices_data.as_ptr() as *const gl::types::GLvoid,
+                    gl::STATIC_DRAW,
+                );
+            }
+
+
+            let program = match draw.draw_type {
+                TessDrawType::Color => &self.color_program,
+                TessDrawType::Gradient { .. } => &self.gradient_program,
+                TessDrawType::Bitmap(_) => &self.bitmap_program,
+            };
+
+            // Unfortunately it doesn't seem to be possible to ensure that vertex attributes will be in
+            // a guaranteed position between shaders in WebGL1 (no layout qualifiers in GLSL in OpenGL ES 1.0).
+            // Attributes can change between shaders, even if the vertex layout is otherwise "the same".
+            // This varies between platforms based on what the GLSL compiler decides to do.
+            unsafe {
+                if program.vertex_position_location != 0xffff_ffff {
+                    gl::VertexAttribPointer(
+                        program.vertex_position_location,
+                        2,
+                        gl::FLOAT,
+                        0,
+                        12,
+                        std::ptr::null(),
+                    );
+                    gl::EnableVertexAttribArray(program.vertex_position_location);
+                }
+
+                if program.vertex_color_location != 0xffff_ffff {
+                    gl::VertexAttribPointer(
+                        program.vertex_color_location,
+                        4,
+                        gl::UNSIGNED_BYTE,
+                        1,
+                        12,
+                        8 as *const c_void,
+                    );
+                    gl::EnableVertexAttribArray(program.vertex_color_location);
+                }
+            }
+
+            let num_vertex_attributes = program.num_vertex_attributes;
+
+            draws.push(match draw.draw_type {
+                TessDrawType::Color => Draw {
+                    draw_type: DrawType::Color,
+                    vao,
+                    vertex_buffer: vertex_buffer,
+                    index_buffer: index_buffer,
+                    num_indices: num_indices,
+                    num_mask_indices: num_mask_indices,
+                },
+                TessDrawType::Gradient { matrix, gradient } => Draw {
+                    draw_type: DrawType::Gradient(Box::new(Gradient::new(
+                        lyon_mesh.gradients[gradient].clone(), // TODO: Gradient deduplication
+                        matrix,
+                    ))),
+                    vao,
+                    vertex_buffer: vertex_buffer,
+                    index_buffer: index_buffer,
+                    num_indices: num_indices,
+                    num_mask_indices: num_mask_indices,
+                },
+                TessDrawType::Bitmap(bitmap) => Draw {
+                    draw_type: DrawType::Bitmap(BitmapDraw {
+                        matrix: bitmap.matrix,
+                        handle: bitmap_source.bitmap_handle(bitmap.bitmap_id, self),
+                        is_smoothed: bitmap.is_smoothed,
+                        is_repeating: bitmap.is_repeating,
+                    }),
+                    vao,
+                    vertex_buffer: vertex_buffer,
+                    index_buffer: index_buffer,
+                    num_indices: num_indices,
+                    num_mask_indices: num_mask_indices,
+                },
+            });
+
+            self.bind_vertex_array(0);
+
+            for i in num_vertex_attributes..NUM_VERTEX_ATTRIBUTES {
+                unsafe {
+                    gl::DisableVertexAttribArray(i);
+                }
+            }
+        }
+        Ok(draws)
+    }
+    fn begin_frame(&mut self, clear: SwfColor) {
+        self.active_program = std::ptr::null();
+        self.mask_state = MaskState::NoMask;
+        self.num_masks = 0;
+        self.mask_state_dirty = true;
+
+        self.mult_color = None;
+        self.add_color = None;
+
+        unsafe {
+            gl::Viewport(0, 0, self.renderbuffer_width, self.renderbuffer_height);
+        }
+
+        self.set_stencil_state();
+        unsafe {
+            if self.is_transparent {
+                gl::ClearColor(0.0, 0.0, 0.0, 0.0);
+            } else {
+                gl::ClearColor(
+                    clear.r as f32 / 255.0,
+                    clear.g as f32 / 255.0,
+                    clear.b as f32 / 255.0,
+                    clear.a as f32 / 255.0,
+                );
+            }
+            gl::StencilMask(0xff);
+            gl::Clear(gl::COLOR_BUFFER_BIT | gl::STENCIL_BUFFER_BIT);
+        }
+    }
+    fn end_frame(&mut self) {   
+        unsafe {
+            gl::Disable(gl::STENCIL_TEST);
+            gl::ColorMask(1, 1, 1, 1);
+
+            // Resolve the MSAA in the render buffer.
+            /*gl::BindFramebuffer(
+                gl::READ_FRAMEBUFFER,
+                Some(&msaa_buffers.render_framebuffer),
+            );
+            gl.BindFramebuffer(gl::DRAW_FRAMEBUFFER, Some(&msaa_buffers.color_framebuffer));*/
+            /*gl::BlitFramebuffer(
+                0,
+                0,
+                self.renderbuffer_width,
+                self.renderbuffer_height,
+                0,
+                0,
+                self.renderbuffer_width,
+                self.renderbuffer_height,
+                gl::COLOR_BUFFER_BIT,
+                gl::NEAREST,
+            );*/
+
+            // Render the resolved framebuffer texture to a quad on the screen.
+            //println!("renderer.rs: 896, binding framebuffer to nothing");
+            gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
+
+            gl::Viewport(
+                0,
+                0,
+                960,
+                544,
+            );
+
+            println!("renderer.rs: 906, using program");
+            let program = &self.bitmap_program;
+            gl::UseProgram(program.id);
+
+            println!("renderer.rs: 910, initing uniforms");
+            program.uniform_matrix4fv(
+                "world_matrix",
+                &[
+                    [2.0, 0.0, 0.0, 0.0],
+                    [0.0, 2.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [-1.0, -1.0, 0.0, 1.0],
+                ],
+            );
+            program.uniform_matrix4fv(
+                "view_matrix",
+                &[
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ],
+            );
+
+            println!("renderer.rs: 930, initing more uniforms");
+            program.uniform4fv("mult_color", &[1.0, 1.0, 1.0, 1.0]);
+            program.uniform4fv("add_color", &[0.0, 0.0, 0.0, 0.0]);
+
+            println!("renderer.rs: 934, selecting active tex");
+            gl::ActiveTexture(gl::TEXTURE0);
+            //self.gl
+                //.bind_texture(Gl2::TEXTURE_2D, Some(&msaa_buffers.framebuffer_texture));
+            //println!("renderer.rs: 938, initing more uniforms");
+            program.uniform1i("u_texture", 0);
+
+            // Render the quad.
+            // Immutable borrow
+            // Get the first quad's VAO using immutable borrow
+            //println!("renderer.rs: 944, getting vao");
+            let vao = self.bitmap_quad_draws[0].vao;
+            self.bind_vertex_array(vao);
+
+            println!("renderer.rs: 938, drawing element: {}", self.bitmap_quad_draws[0].num_indices);
+            println!("VAO: {:?}", vao);
+            let mut error = unsafe { gl::GetError() };
+            if error != gl::NO_ERROR {
+                println!("OpenGL Error: {:?}", error);
+            }
+            gl::DrawElements(
+                gl::TRIANGLE_FAN,
+                self.bitmap_quad_draws[0].num_indices,
+                gl::UNSIGNED_INT,
+                0 as *const c_void
+            );
+
+            error = unsafe { gl::GetError() };
+            if error != gl::NO_ERROR {
+                println!("OpenGL Error: {:?}", error);
+            }
+        }
     }
 }
 
@@ -296,15 +1011,54 @@ impl ShapeHandleImpl for Mesh {}
 impl RenderBackend for VitaRenderBackend {
     fn viewport_dimensions(&self) -> ViewportDimensions {
         ViewportDimensions {
-            width: 960 as u32,
-            height: 544 as u32,
-            scale_factor: 1.0,
+            width: self.renderbuffer_width as u32,
+            height: self.renderbuffer_height as u32,
+            scale_factor: self.viewport_scale_factor,
         }
     }
-    fn set_viewport_dimensions(&mut self, _: ViewportDimensions) {
+    fn set_viewport_dimensions(&mut self, dimensions: ViewportDimensions){
+        println!("Setting dimenstions to: {}, {}", dimensions.width, dimensions.height);
+        // Build view matrix based on canvas size.
+        self.view_matrix = [
+            [1.0 / (dimensions.width as f32 / 2.0), 0.0, 0.0, 0.0],
+            [0.0, -1.0 / (dimensions.height as f32 / 2.0), 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0, 1.0],
+        ];
+
+        // Setup GL viewport and renderbuffers clamped to reasonable sizes.
+        // We don't use `.clamp()` here because `gl.drawing_buffer_width()` and
+        // `gl.drawing_buffer_height()` return zero when the WebGL context is lost,
+        // then an assertion error would be triggered.
+        self.renderbuffer_width =
+            (dimensions.width.max(1) as i32).min(960);
+        self.renderbuffer_height =
+            (dimensions.height.max(1) as i32).min(544);
+
+        println!("Setting renderbuffer to: {}, {}", self.renderbuffer_width, self.renderbuffer_height);
+
+        //let _ = self.build_msaa_buffers();
+        unsafe {
+            gl::Viewport(0, 0, self.renderbuffer_width, self.renderbuffer_height);
+            self.viewport_scale_factor = dimensions.scale_factor;
+        }
     }
     fn register_shape(&mut self, _shape: DistilledShape, _bitmap_source: &dyn BitmapSource,) -> ShapeHandle {
-        let mesh = Mesh {vao_ext: 0, draws: Vec::new()};
+        //let mesh = Mesh {vao_ext: 0, draws: Vec::new()};
+        println!("Registering shape");
+        let mesh = match self.register_shape_internal(_shape, _bitmap_source) {
+            Ok(draws) => Mesh {
+                draws,
+                vao_ext: self.vao,
+            },
+            Err(e) => {
+                println!("Couldn't register shape: {}", e);
+                Mesh {
+                    draws: vec![],
+                    vao_ext: self.vao,
+                }
+            }
+        };
         ShapeHandle(Arc::new(mesh))
     }
     fn render_offscreen(&mut self, _: BitmapHandle, _: CommandList, _: StageQuality, _: PixelRegion) -> Option<Box<(dyn SyncHandle + 'static)>> {
@@ -313,9 +1067,16 @@ impl RenderBackend for VitaRenderBackend {
 
     fn submit_frame(&mut self, _clear: SwfColor, _commands: CommandList, cache_entries: Vec<BitmapCacheEntry>,) {
         //println!("rendering frame");
-        self.canvas.set_draw_color(Color::RGB(_clear.r, _clear.g, _clear.b));
-        self.canvas.clear();
-        self.canvas.present();
+        unsafe {
+            //println!("{}, {}, {}", _clear.r, _clear.g, _clear.b);
+            //gl::ClearColor((_clear.r / 255) as f32, (_clear.g / 255) as f32, (_clear.b / 255) as f32, 1.0);
+            //gl::Clear(gl::COLOR_BUFFER_BIT);
+        }
+        self.begin_frame(_clear);
+        _commands.execute(self);
+        self.end_frame();
+        self.window.gl_swap_window();
+        //self.end_frame();
     }
     fn create_empty_texture(&mut self, _: u32, _: u32) -> Result<BitmapHandle, BitmapError> {
         todo!()
@@ -350,4 +1111,190 @@ impl RenderBackend for VitaRenderBackend {
     fn resolve_sync_handle(&mut self, _handle: Box<dyn SyncHandle>, _with_rgba: RgbaBufRead,) -> Result<(), BitmapError> {
         todo!()
     }
+}
+
+fn as_mesh(handle: &ShapeHandle) -> &Mesh {
+    <dyn ShapeHandleImpl>::downcast_ref(&*handle.0).expect("Shape handle must be a WebGL ShapeData")
+}
+
+#[derive(Debug)]
+struct RegistryData {
+    width: u32,
+    height: u32,
+    texture: u32,
+}
+
+impl Drop for RegistryData {
+    fn drop(&mut self) {
+        unsafe {
+            gl::DeleteTextures(1, self.texture as *const u32);
+        }
+    }
+}
+
+impl BitmapHandleImpl for RegistryData {}
+
+fn as_registry_data(handle: &BitmapHandle) -> &RegistryData {
+    <dyn BitmapHandleImpl>::downcast_ref(&*handle.0)
+        .expect("Bitmap handle must be webgl RegistryData")
+}
+
+impl CommandHandler for VitaRenderBackend {
+    fn render_bitmap(&mut self, _: BitmapHandle, _: Transform, _: bool, _: PixelSnapping) { todo!() }
+    fn render_stage3d(&mut self, _: BitmapHandle, _: Transform) { todo!() }
+    fn render_shape(&mut self, shape: ShapeHandle, transform: Transform) {
+        println!("rendering shape");
+        let world_matrix = [
+            [transform.matrix.a, transform.matrix.b, 0.0, 0.0],
+            [transform.matrix.c, transform.matrix.d, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [
+                transform.matrix.tx.to_pixels() as f32,
+                transform.matrix.ty.to_pixels() as f32,
+                0.0,
+                1.0,
+            ],
+        ];
+
+        let mult_color = transform.color_transform.mult_rgba_normalized();
+        let add_color = transform.color_transform.add_rgba_normalized();
+
+        self.set_stencil_state();
+
+        let mesh = as_mesh(&shape);
+        for draw in &mesh.draws {
+            // Ignore strokes when drawing a mask stencil.
+            let num_indices = if self.mask_state != MaskState::DrawMaskStencil
+                && self.mask_state != MaskState::ClearMaskStencil
+            {
+                draw.num_indices
+            } else {
+                draw.num_mask_indices
+            };
+            if num_indices == 0 {
+                continue;
+            }
+
+            self.bind_vertex_array(draw.vao);
+
+            let program = match &draw.draw_type {
+                DrawType::Color => &self.color_program,
+                DrawType::Gradient(_) => &self.gradient_program,
+                DrawType::Bitmap { .. } => &self.bitmap_program,
+            };
+
+            if program as *const ShaderProgram != self.active_program {
+                unsafe {
+                    gl::UseProgram(program.id);
+                }
+
+                self.active_program = program as *const ShaderProgram;
+
+                program.uniform_matrix4fv("view_matrix", &self.view_matrix);
+
+                self.mult_color = None;
+                self.add_color = None;
+            }
+
+            program.uniform_matrix4fv("world_matrix", &world_matrix);
+            if Some(mult_color) != self.mult_color {
+                program.uniform4fv("mult_color", &mult_color);
+                self.mult_color = Some(mult_color);
+            }
+            if Some(add_color) != self.add_color {
+                program.uniform4fv("add_color", &add_color);
+                self.add_color = Some(add_color);
+            }
+
+            match &draw.draw_type {
+                DrawType::Color => (),
+                DrawType::Gradient(gradient) => {
+                    program.uniform_matrix3fv(
+                        "u_matrix",
+                        &gradient.matrix,
+                    );
+                    program.uniform1i(
+                        "u_gradient_type",
+                        gradient.gradient_type,
+                    );
+                    program.uniform1fv("u_ratios", &gradient.ratios);
+                    program.uniform4fv(
+                        
+                        "u_colors",
+                        bytemuck::cast_slice(&gradient.colors),
+                    );
+                    program.uniform1i(
+                        
+                        "u_repeat_mode",
+                        gradient.repeat_mode,
+                    );
+                    program.uniform1f(
+                        
+                        "u_focal_point",
+                        gradient.focal_point,
+                    );
+                    program.uniform1i(
+                        
+                        "u_interpolation",
+                        (gradient.interpolation == swf::GradientInterpolation::LinearRgb) as i32,
+                    );
+                },
+                DrawType::Bitmap(bitmap) => {
+                    let texture = match &bitmap.handle {
+                        Some(handle) => &as_registry_data(handle).texture,
+                        None => {
+                            println!("Tried to render a handleless bitmap");
+                            continue;
+                        }
+                    };
+
+                    program.uniform_matrix3fv(
+                        "texture_matrix",
+                        &bitmap.matrix,
+                    );
+
+                    // Bind texture.
+                    unsafe {
+                        gl::ActiveTexture(gl::TEXTURE0);
+                        gl::BindTexture(gl::TEXTURE_2D, *texture);
+                        program.uniform1i("u_texture", 0);
+
+                        // Set texture parameters.
+                        let filter = if bitmap.is_smoothed {
+                            gl::LINEAR as i32
+                        } else {
+                            gl::NEAREST as i32
+                        };
+                        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, filter);
+                        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, filter);
+                        // On WebGL1, you are unable to change the wrapping parameter of non-power-of-2 textures.
+                        let wrap = if bitmap.is_repeating {
+                            gl::REPEAT as i32
+                        } else {
+                            gl::CLAMP_TO_EDGE as i32
+                        };
+                        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, wrap);
+                        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, wrap);
+                    }
+                }
+            }
+
+            let error = unsafe { gl::GetError() };
+            if error != gl::NO_ERROR {
+                println!("OpenGL Error: {:?}", error);
+            }
+            
+            unsafe {
+                gl::DrawElements(gl::TRIANGLES, num_indices, gl::UNSIGNED_INT, std::ptr::null());
+            }
+        }
+    }
+    fn draw_rect(&mut self, _: ruffle_core::Color, _: ruffle_render::matrix::Matrix) { todo!() }
+    fn draw_line(&mut self, _: ruffle_core::Color, _: ruffle_render::matrix::Matrix) { todo!() }
+    fn draw_line_rect(&mut self, _: ruffle_core::Color, _: ruffle_render::matrix::Matrix) { todo!() }
+    fn push_mask(&mut self) { todo!() }
+    fn activate_mask(&mut self) { todo!() }
+    fn deactivate_mask(&mut self) { todo!() }
+    fn pop_mask(&mut self) { todo!() }
+    fn blend(&mut self, _: CommandList, _: RenderBlendMode) { todo!() }
 }

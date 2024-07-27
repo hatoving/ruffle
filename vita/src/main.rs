@@ -1,7 +1,4 @@
 mod backends;
-mod vitalib;
-
-use vitalib::*;
 
 use crate::backends::VitaRenderBackend;
 use anyhow::Result;
@@ -27,6 +24,7 @@ use sdl2::render::{Canvas, Texture, TextureCreator};
 use sdl2::video::{Window, WindowContext};
 use sdl2::{controller::Button, event::Event};
 
+#[link(name = "vitaGL", kind = "static")]
 #[link(name = "SDL2", kind = "static")]
 #[link(name = "vitashark", kind = "static")]
 #[link(name = "SceShaccCgExt", kind = "static")]
@@ -43,19 +41,17 @@ use sdl2::{controller::Button, event::Event};
 #[link(name = "SceKernelDmacMgr_stub", kind = "static")]
 #[link(name = "SceGxm_stub", kind = "static")]
 #[link(name = "SceShaccCg_stub", kind = "static")]
+#[link(name = "SceIme_stub", kind = "static")]
 #[link(name = "SceHid_stub", kind = "static")]
 extern "C" {}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let sdl_context = sdl2::init()?;
-    let video_subsystem = sdl_context.video()?;
+    let sdl_context = sdl2::init().unwrap();
+    let video_subsystem = sdl_context.video().unwrap();
 
     let _file_bytes = read("ux0:data/ruffle/game.swf").unwrap();
     let _swf : SwfMovie = SwfMovie::from_data(&_file_bytes, "ux0:data/ruffle/game.swf".to_string(), None).unwrap();
 
-    unsafe {
-        vitaGL::vglInitExtended(0, 960, 544, 8 * 1024 * 1024, 0);
-    }
 
     let window = video_subsystem
         .window(
@@ -63,18 +59,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             960,
             544,
         )
-        .position_centered()
+        .opengl()
         .build()
-        .map_err(|e| e.to_string())?;
+        .unwrap();
 
-    let mut canvas = window
-        .into_canvas()
-        .target_texture()
-        .present_vsync()
-        .build()
-        .map_err(|e| e.to_string())?;
-    println!("Using SDL_Renderer \"{}\"", canvas.info().name);
+    let _gl_context = window.gl_create_context().unwrap();
+    let _gl = gl::load_with(|s| video_subsystem.gl_get_proc_address(s) as *const std::os::raw::c_void);
 
+    unsafe {
+        gl::ClearColor(0.3, 0.3, 0.5, 1.0);
+    }
     /*let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::GL,
         ..Default::default()
@@ -94,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _player : Arc<Mutex<Player>> = PlayerBuilder::new()
         .with_log(VitaLogBackend::new())
-        .with_renderer(VitaRenderBackend::new(canvas, _swf.width().to_pixels() as u32, _swf.height().to_pixels() as u32))
+        .with_renderer(VitaRenderBackend::new(window))
         .with_movie(_swf.clone())
         .with_autoplay(true)
         .build();
@@ -106,7 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let mut last_time = Instant::now();
 
-    loop {
+    'main: loop {
         let frame_start_time = Instant::now();
 
         // Calculate delta time
