@@ -262,6 +262,10 @@ impl ShaderProgram {
                 gl::GetUniformLocation(self.id, CString::new(uniform).unwrap().as_ptr()),
                 value
             );
+            let error = unsafe { gl::GetError() };
+            if error != gl::NO_ERROR {
+                println!("OpenGL Error {}: {:?}", line!(), error);
+            }
         }
     }
 
@@ -273,6 +277,10 @@ impl ShaderProgram {
                 gl::GetUniformLocation(self.id, CString::new(uniform).unwrap().as_ptr()),
                 value
             );
+            let error = unsafe { gl::GetError() };
+            if error != gl::NO_ERROR {
+                println!("OpenGL Error {}: {:?}", line!(), error);
+            }
         }
     }
 
@@ -284,6 +292,10 @@ impl ShaderProgram {
                 1,
                 values.as_ptr() as *const f32,
             );
+            let error = unsafe { gl::GetError() };
+            if error != gl::NO_ERROR {
+                println!("OpenGL Error {}: {:?}", line!(), error);
+            }
         }
     }
 
@@ -296,6 +308,10 @@ impl ShaderProgram {
                 1,
                 values.as_ptr() as *const f32,
             );
+            let error = unsafe { gl::GetError() };
+            if error != gl::NO_ERROR {
+                println!("OpenGL Error {}: {:?}", line!(), error);
+            }
         }
     }
 
@@ -308,6 +324,10 @@ impl ShaderProgram {
                 0,
                 bytemuck::cast_slice(values).as_ptr() as *const f32,
             );
+            let error = unsafe { gl::GetError() };
+            if error != gl::NO_ERROR {
+                println!("OpenGL Error {}: {:?}", line!(), error);
+            }
         }
     }
 
@@ -320,6 +340,10 @@ impl ShaderProgram {
                 0,
                 bytemuck::cast_slice(values).as_ptr() as *const f32,
             );
+            let error = unsafe { gl::GetError() };
+            if error != gl::NO_ERROR {
+                println!("OpenGL Error {}: {:?}", line!(), error);
+            }
         }
     }
 }
@@ -380,6 +404,7 @@ pub fn create_and_compile_shader(_shader: &mut u32, _count: i32, _type: u32, _st
         gl::CompileShader(*_shader);
 
         gl::GetShaderiv(*_shader, 0x8B81, &mut result);
+
     }
 
     println!("SHADER ID: {}", *_shader);
@@ -678,6 +703,7 @@ impl VitaRenderBackend {
         
         unsafe {
             gl::GenVertexArrays(1, &mut vao);
+            gl::BindVertexArray(vao);
         }
         println!("glGenVertexArrays: {}", vao);
         self.vao = vao;
@@ -747,8 +773,9 @@ impl VitaRenderBackend {
             let num_mask_indices = draw.mask_index_count as i32;
             println!("num_indices: {}", num_indices);
 
-            let vao = self.create_vertex_array();
+            let _vao = self.create_vertex_array();
             let vertex_buffer = self.create_buffer();
+            let error = unsafe { gl::GetError() };
             unsafe {
                 gl::BindBuffer(gl::ARRAY_BUFFER, vertex_buffer);
             }
@@ -779,7 +806,6 @@ impl VitaRenderBackend {
                     gl::STATIC_DRAW,
                 );
             }
-
 
             let program = match draw.draw_type {
                 TessDrawType::Color => &self.color_program,
@@ -815,6 +841,7 @@ impl VitaRenderBackend {
                     );
                     gl::EnableVertexAttribArray(program.vertex_color_location);
                 }
+
             }
 
             let num_vertex_attributes = program.num_vertex_attributes;
@@ -822,7 +849,7 @@ impl VitaRenderBackend {
             draws.push(match draw.draw_type {
                 TessDrawType::Color => Draw {
                     draw_type: DrawType::Color,
-                    vao,
+                    vao: _vao,
                     vertex_buffer: vertex_buffer,
                     index_buffer: index_buffer,
                     num_indices: num_indices,
@@ -833,7 +860,7 @@ impl VitaRenderBackend {
                         lyon_mesh.gradients[gradient].clone(), // TODO: Gradient deduplication
                         matrix,
                     ))),
-                    vao,
+                    vao: _vao,
                     vertex_buffer: vertex_buffer,
                     index_buffer: index_buffer,
                     num_indices: num_indices,
@@ -846,7 +873,7 @@ impl VitaRenderBackend {
                         is_smoothed: bitmap.is_smoothed,
                         is_repeating: bitmap.is_repeating,
                     }),
-                    vao,
+                    vao: _vao,
                     vertex_buffer: vertex_buffer,
                     index_buffer: index_buffer,
                     num_indices: num_indices,
@@ -859,6 +886,11 @@ impl VitaRenderBackend {
             for i in num_vertex_attributes..NUM_VERTEX_ATTRIBUTES {
                 unsafe {
                     gl::DisableVertexAttribArray(i);
+                    let error = unsafe { gl::GetError() };
+                    if error != gl::NO_ERROR {
+                        println!("OpenGL Error {}: {:?}", line!(), error);
+                    }
+
                 }
             }
         }
@@ -874,7 +906,7 @@ impl VitaRenderBackend {
         self.add_color = None;
 
         unsafe {
-            gl::Viewport(0, 0, self.renderbuffer_width, self.renderbuffer_height);
+            //gl::Viewport(0, 0, self.renderbuffer_width, self.renderbuffer_height);
         }
 
         self.set_stencil_state();
@@ -895,98 +927,7 @@ impl VitaRenderBackend {
     }
     fn end_frame(&mut self) {   
         unsafe {
-            gl::Disable(gl::STENCIL_TEST);
-            gl::ColorMask(1, 1, 1, 1);
-
-            // Resolve the MSAA in the render buffer.
-            /*gl::BindFramebuffer(
-                gl::READ_FRAMEBUFFER,
-                Some(&msaa_buffers.render_framebuffer),
-            );
-            gl.BindFramebuffer(gl::DRAW_FRAMEBUFFER, Some(&msaa_buffers.color_framebuffer));*/
-            /*gl::BlitFramebuffer(
-                0,
-                0,
-                self.renderbuffer_width,
-                self.renderbuffer_height,
-                0,
-                0,
-                self.renderbuffer_width,
-                self.renderbuffer_height,
-                gl::COLOR_BUFFER_BIT,
-                gl::NEAREST,
-            );*/
-
-            // Render the resolved framebuffer texture to a quad on the screen.
-            //println!("renderer.rs: 896, binding framebuffer to nothing");
-            gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
-
-            gl::Viewport(
-                0,
-                0,
-                960,
-                544,
-            );
-
-            println!("renderer.rs: 906, using program");
-            let program = &self.bitmap_program;
-            gl::UseProgram(program.id);
-
-            println!("renderer.rs: 910, initing uniforms");
-            program.uniform_matrix4fv(
-                "world_matrix",
-                &[
-                    [2.0, 0.0, 0.0, 0.0],
-                    [0.0, 2.0, 0.0, 0.0],
-                    [0.0, 0.0, 1.0, 0.0],
-                    [-1.0, -1.0, 0.0, 1.0],
-                ],
-            );
-            program.uniform_matrix4fv(
-                "view_matrix",
-                &[
-                    [1.0, 0.0, 0.0, 0.0],
-                    [0.0, 1.0, 0.0, 0.0],
-                    [0.0, 0.0, 1.0, 0.0],
-                    [0.0, 0.0, 0.0, 1.0],
-                ],
-            );
-
-            println!("renderer.rs: 930, initing more uniforms");
-            program.uniform4fv("mult_color", &[1.0, 1.0, 1.0, 1.0]);
-            program.uniform4fv("add_color", &[0.0, 0.0, 0.0, 0.0]);
-
-            println!("renderer.rs: 934, selecting active tex");
-            gl::ActiveTexture(gl::TEXTURE0);
-            //self.gl
-                //.bind_texture(Gl2::TEXTURE_2D, Some(&msaa_buffers.framebuffer_texture));
-            //println!("renderer.rs: 938, initing more uniforms");
-            program.uniform1i("u_texture", 0);
-
-            // Render the quad.
-            // Immutable borrow
-            // Get the first quad's VAO using immutable borrow
-            //println!("renderer.rs: 944, getting vao");
-            let vao = self.bitmap_quad_draws[0].vao;
-            self.bind_vertex_array(vao);
-
-            println!("renderer.rs: 938, drawing element: {}", self.bitmap_quad_draws[0].num_indices);
-            println!("VAO: {:?}", vao);
-            let mut error = unsafe { gl::GetError() };
-            if error != gl::NO_ERROR {
-                println!("OpenGL Error: {:?}", error);
-            }
-            gl::DrawElements(
-                gl::TRIANGLE_FAN,
-                self.bitmap_quad_draws[0].num_indices,
-                gl::UNSIGNED_INT,
-                0 as *const c_void
-            );
-
-            error = unsafe { gl::GetError() };
-            if error != gl::NO_ERROR {
-                println!("OpenGL Error: {:?}", error);
-            }
+            self.window.gl_swap_window();
         }
     }
 }
@@ -1039,6 +980,7 @@ impl RenderBackend for VitaRenderBackend {
 
         //let _ = self.build_msaa_buffers();
         unsafe {
+        	self.window.set_size(self.renderbuffer_width as u32, self.renderbuffer_height as u32);
             gl::Viewport(0, 0, self.renderbuffer_width, self.renderbuffer_height);
             self.viewport_scale_factor = dimensions.scale_factor;
         }
@@ -1075,7 +1017,7 @@ impl RenderBackend for VitaRenderBackend {
         self.begin_frame(_clear);
         _commands.execute(self);
         self.end_frame();
-        self.window.gl_swap_window();
+
         //self.end_frame();
     }
     fn create_empty_texture(&mut self, _: u32, _: u32) -> Result<BitmapHandle, BitmapError> {
@@ -1143,7 +1085,8 @@ impl CommandHandler for VitaRenderBackend {
     fn render_bitmap(&mut self, _: BitmapHandle, _: Transform, _: bool, _: PixelSnapping) { todo!() }
     fn render_stage3d(&mut self, _: BitmapHandle, _: Transform) { todo!() }
     fn render_shape(&mut self, shape: ShapeHandle, transform: Transform) {
-        println!("rendering shape");
+        println!("rendering shape: {}, {}", transform.matrix.tx.to_pixels() as f32, transform.matrix.ty.to_pixels() as f32);
+        
         let world_matrix = [
             [transform.matrix.a, transform.matrix.b, 0.0, 0.0],
             [transform.matrix.c, transform.matrix.d, 0.0, 0.0],
@@ -1161,6 +1104,8 @@ impl CommandHandler for VitaRenderBackend {
 
         self.set_stencil_state();
 
+        let mut error = 0;
+
         let mesh = as_mesh(&shape);
         for draw in &mesh.draws {
             // Ignore strokes when drawing a mask stencil.
@@ -1176,6 +1121,10 @@ impl CommandHandler for VitaRenderBackend {
             }
 
             self.bind_vertex_array(draw.vao);
+            error = unsafe { gl::GetError() };
+            if error != gl::NO_ERROR {
+                println!("OpenGL Error {}: {:?}", line!(), error);
+            }
 
             let program = match &draw.draw_type {
                 DrawType::Color => &self.color_program,
@@ -1186,6 +1135,10 @@ impl CommandHandler for VitaRenderBackend {
             if program as *const ShaderProgram != self.active_program {
                 unsafe {
                     gl::UseProgram(program.id);
+                }
+                error = unsafe { gl::GetError() };
+                if error != gl::NO_ERROR {
+                    println!("OpenGL Error {}: {:?}", line!(), error);
                 }
 
                 self.active_program = program as *const ShaderProgram;
@@ -1206,84 +1159,17 @@ impl CommandHandler for VitaRenderBackend {
                 self.add_color = Some(add_color);
             }
 
+            //println!("drawtype color {:?}", &draw.draw_type);
             match &draw.draw_type {
                 DrawType::Color => (),
-                DrawType::Gradient(gradient) => {
-                    program.uniform_matrix3fv(
-                        "u_matrix",
-                        &gradient.matrix,
-                    );
-                    program.uniform1i(
-                        "u_gradient_type",
-                        gradient.gradient_type,
-                    );
-                    program.uniform1fv("u_ratios", &gradient.ratios);
-                    program.uniform4fv(
-                        
-                        "u_colors",
-                        bytemuck::cast_slice(&gradient.colors),
-                    );
-                    program.uniform1i(
-                        
-                        "u_repeat_mode",
-                        gradient.repeat_mode,
-                    );
-                    program.uniform1f(
-                        
-                        "u_focal_point",
-                        gradient.focal_point,
-                    );
-                    program.uniform1i(
-                        
-                        "u_interpolation",
-                        (gradient.interpolation == swf::GradientInterpolation::LinearRgb) as i32,
-                    );
-                },
-                DrawType::Bitmap(bitmap) => {
-                    let texture = match &bitmap.handle {
-                        Some(handle) => &as_registry_data(handle).texture,
-                        None => {
-                            println!("Tried to render a handleless bitmap");
-                            continue;
-                        }
-                    };
-
-                    program.uniform_matrix3fv(
-                        "texture_matrix",
-                        &bitmap.matrix,
-                    );
-
-                    // Bind texture.
-                    unsafe {
-                        gl::ActiveTexture(gl::TEXTURE0);
-                        gl::BindTexture(gl::TEXTURE_2D, *texture);
-                        program.uniform1i("u_texture", 0);
-
-                        // Set texture parameters.
-                        let filter = if bitmap.is_smoothed {
-                            gl::LINEAR as i32
-                        } else {
-                            gl::NEAREST as i32
-                        };
-                        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, filter);
-                        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, filter);
-                        // On WebGL1, you are unable to change the wrapping parameter of non-power-of-2 textures.
-                        let wrap = if bitmap.is_repeating {
-                            gl::REPEAT as i32
-                        } else {
-                            gl::CLAMP_TO_EDGE as i32
-                        };
-                        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, wrap);
-                        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, wrap);
-                    }
-                }
+                DrawType::Gradient(_) | DrawType::Bitmap(_) => todo!(),
             }
 
-            let error = unsafe { gl::GetError() };
+            error = unsafe { gl::GetError() };
             if error != gl::NO_ERROR {
-                println!("OpenGL Error: {:?}", error);
+                println!("OpenGL Error {}: {:?}", line!(), error);
             }
-            
+
             unsafe {
                 gl::DrawElements(gl::TRIANGLES, num_indices, gl::UNSIGNED_INT, std::ptr::null());
             }

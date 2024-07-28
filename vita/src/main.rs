@@ -60,15 +60,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             544,
         )
         .opengl()
+        .resizable()
         .build()
         .unwrap();
 
     let _gl_context = window.gl_create_context().unwrap();
     let _gl = gl::load_with(|s| video_subsystem.gl_get_proc_address(s) as *const std::os::raw::c_void);
 
-    unsafe {
-        gl::ClearColor(0.3, 0.3, 0.5, 1.0);
-    }
     /*let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::GL,
         ..Default::default()
@@ -112,7 +110,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(value) = _player.lock().unwrap().current_frame() {
             //println!("The current frame is {}", value);
         }
-        _player.lock().unwrap().render();
+        if (_player.lock().unwrap().needs_render()) {
+            _player.lock().unwrap().render();
+        }
 
         let elapsed = frame_start_time.duration_since(last_time);
         let sleep_duration = frame_duration.saturating_sub(elapsed);
